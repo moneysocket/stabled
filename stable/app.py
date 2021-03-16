@@ -120,6 +120,7 @@ class StabledApp():
         s.onping = self.consumer_on_ping
         s.oninvoice = self.consumer_on_invoice
         s.onpreimage = self.consumer_on_preimage
+        s.onerror = self.consumer_on_error
         return s
 
     def setup_provider_stack(self):
@@ -384,10 +385,10 @@ class StabledApp():
         liability_account.add_pending(bolt11_payment_hash, bolt11)
         self.liabilities.reindex_account(liability_account)
 
-        # notify requesting provider of this bolt11
-        self.provider_stack.fulfil_request_invoice_cb(
-            liability_nexus_uuid, bolt11, liability_request_uuid)
-        # TODO handle provider nexus gone?
+        shared_seeds = liability_account.get_all_shared_seeds()
+
+        self.provider_stack.notify_invoice(shared_seeds, bolt11,
+                                           liability_request_uuid)
 
 
     def _handle_pending_preimage(self, nexus, preimage, request_reference_uuid):
@@ -446,6 +447,33 @@ class StabledApp():
     def consumer_on_preimage(self, nexus, preimage, request_reference_uuid):
         self._handle_pending_preimage(nexus, preimage, request_reference_uuid)
         self._handle_paying_preimage(nexus, preimage, request_reference_uuid)
+
+
+    def consumer_on_error(self, nexus, error_msg, request_reference_uuid):
+        print("got error: %s" % error_msg)
+        if request_reference_uuid in self.invoice_requests.keys():
+            r = self.invoice_requests.pop(request_reference_uuid)
+            account_uuid = r['liability_account_uuid']
+            liability_account = self.liabilities.lookup_by_uuid(account_uuid)
+            shared_seeds = liability_account.get_all_shared_seeds()
+            liability_rrid = r['liability_request_uuid']
+            self.provider_stack.notify_error(shared_seeds, error_msg,
+                                             liability_rrid)
+            print("notified provider of invoice error: %s" % error_msg)
+        elif request_reference_uuid in self.pay_requests.keys():
+            r = self.pay_requests.pop(request_reference_uuid)
+            account_uuid = r['liability_account_uuid']
+            liability_account = self.liabilities.lookup_by_uuid(account_uuid)
+            shared_seeds = liability_account.get_all_shared_seeds()
+            liability_rrid = r['liability_request_uuid']
+            self.provider_stack.notify_error(shared_seeds, error_msg,
+                                             liability_rrid)
+            bolt11 = r['bolt11']
+            payment_hash = Bolt11.get_payment_hash(bolt11)
+            liability.account.remove_paying(payment_hash)
+            print("notified provider of pay error: %s" % error_msg)
+        else:
+            print("unknown error notification: %s" % error_msg)
 
 
     ###########################################################################
